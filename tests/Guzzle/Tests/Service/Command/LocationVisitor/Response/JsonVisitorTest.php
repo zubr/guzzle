@@ -144,4 +144,38 @@ class JsonVisitorTest extends AbstractResponseVisitorTest
         $this->assertEquals(array('foo' => array('bar' => 15)), $value);
     }
 
+    public function testVisitsNestedAdditionalProperties()
+    {
+        $visitor = new Visitor();
+        $param = new Parameter(array(
+            'name'                 => 'foo',
+            'type'                 => 'object',
+            'properties'           => array(
+                'bam' => array('type' => 'string'),
+                'baz' => array(
+                    'type' => 'object',
+                    'properties' => array(
+                        'foo' => array('type' => 'string'),
+                        'baz' => array('type' => 'number')
+                    )
+                )
+            ),
+        ));
+        $value = array();
+        $json = array(
+            'foo' => array(
+                'bam' => 15,
+                'baz' => array(
+                    'foo'   => 'abc',
+                    'baz'   => 123,
+                    'other' => 'testing',
+                    'hi'    => 'there',
+                    'arr'   => array(1, 2, 3)
+                )
+            )
+        );
+        $visitor->setJson($json);
+        $visitor->visit($this->command, $this->response, $param, $value);
+        $this->assertEquals($json, $value);
+    }
 }

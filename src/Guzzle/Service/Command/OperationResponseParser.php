@@ -117,88 +117,12 @@ class OperationResponseParser extends DefaultResponseParser
      */
     protected function visitResult(Parameter $model, CommandInterface $command, Response $response)
     {
-        $foundVisitors = $result = $knownProps = array();
-        $props = $model->getProperties();
-        $type = $model->getType();
+        $foundVisitors = $result = array();
 
-        if ($type == 'object') {
-            // Use 'location' from all individual defined properties
-            foreach ($props as $schema) {
-                if ($location = $schema->getLocation()) {
-                    // Trigger the before method on the first found visitor of this type
-                    if (!isset($foundVisitors[$location])) {
-                        $foundVisitors[$location] = $this->factory->getResponseVisitor($location);
-                        $foundVisitors[$location]->before($command, $result);
-                    }
-                }
-            }
-        } elseif ($type == 'array') {
-            // Use 'location' from items schema
-            $items = $model->getItems();
-            if ($items instanceof Parameter && ($location = $items->getLocation())) {
-                // Trigger the before method on the first found visitor of this type
-                if (!isset($foundVisitors[$location])) {
-                    $foundVisitors[$location] = $this->factory->getResponseVisitor($location);
-                    $foundVisitors[$location]->before($command, $result);
-                }
-            }
-        }
-
-        // Use 'location' defined on the top of the model
-        if ($location = $model->getLocation()) {
-            if (!isset($foundVisitors[$location])) {
-                $foundVisitors[$location] = $this->factory->getResponseVisitor($location);
-                $foundVisitors[$location]->before($command, $result);
-            }
-        }
-
-        // If top-level additionalProperties is a schema, use it together with main schema
-        if (($additional = $model->getAdditionalProperties()) instanceof Parameter) {
-            $location = $model->getAdditionalProperties()->getLocation();
-            if (!isset($foundVisitors[$location])) {
-                $foundVisitors[$location] = $this->factory->getResponseVisitor($location);
-                $foundVisitors[$location]->before($command, $result);
-            }
-
-            // Remove the main model name from schema definition so it doesn't try to
-            // match any particular property...
-            $oldWireName = $model->getWireName();
-            $oldName = $model->getName();
-            $model->setSentAs(null);
-            $model->setName(null);
-
-            // Run the visitor against main schema and allow it visit all undefined properties
-            $foundVisitors[$location]->visit($command, $response, $model, $result, true);
-
-            // Restore names
-            $model->setSentAs($oldWireName);
-            $model->setName($oldName);
-        }
-
-        // Visit items
-        if ($type == 'object') {
-            // Visit items for each defined property
-            foreach ($props as $schema) {
-                $knownProps[$schema->getName()] = 1;
-                if ($location = $schema->getLocation()) {
-                    $foundVisitors[$location]->visit($command, $response, $schema, $result);
-                }
-            }
-        } elseif (
-            ($model->getType() == 'array') &&               // the model is an 'array',
-            ($items = $model->getItems()) &&                // 'items' are defined,
-            (
-                ($location = $items->getLocation()) ||      // 'items' has 'location' specified
-                ($location = $model->getLocation())         // or the model has one
-            )
-        ) {
-            // Visit items of a top-level array
-            $foundVisitors[$location]->visit($command, $response, $model, $result, true);
-        }
-
-        // Remove any unknown and potentially unsafe top-level properties
-        if ($type == 'object' && $additional === false) {
-            $result = array_intersect_key($result, $knownProps);
+        if ($model->getType() == 'object') {
+            $this->visitOuterObject($model, $command, $response, $result, $foundVisitors);
+        } elseif ($model->getType() == 'array') {
+            $this->visitOuterArray($model, $command, $response, $result, $foundVisitors);
         }
 
         // Call the after() method of each found visitor
@@ -207,5 +131,114 @@ class OperationResponseParser extends DefaultResponseParser
         }
 
         return $result;
+    }
+
+    private function visitOuterObject(
+        Parameter $model,
+        CommandInterface $command,
+        Response $response,
+        &$result,
+        &$foundVisitors
+    ) {
+        // Use 'location' from all individual defined properties
+        foreach ($model->getProperties() as $schema) {
+            if ($location = $schema->getLocation()) {
+                // Trigger the before method on the first found visitor of this type
+                if (!isset($foundVisitors[$location])) {
+                    $foundVisitors[$location] = $this->factory->getResponseVisitor($location);
+                    $foundVisitors[$location]->before($command, $result);
+                }
+            }
+        }
+
+        // If top-level additionalProperties is a schema, use it together with main schema
+        if (($additional = $model->getAdditionalProperties()) instanceof Parameter) {
+            $this->visitAdditionalProperties($model, $command, $response, $result, $foundVisitors);
+        }
+
+        $knownProps = array();
+        // Visit items for each defined property
+        foreach ($model->getProperties() as $schema) {
+            $knownProps[$schema->getName()] = 1;
+            if ($location = $schema->getLocation()) {
+                $foundVisitors[$location]->visit($command, $response, $schema, $result);
+            }
+        }
+
+        // Remove any unknown and potentially unsafe top-level properties
+        if ($additional === false) {
+            $result = array_intersect_key($result, $knownProps);
+        }
+    }
+
+    /**
+     * Visits the additional properties of an outer object. Additional properties are handled in location visitors by
+     * setting the sentAs and name to null, making the visitor not match a named property. However, the visitor then
+     * checks for additionalProperties which are then visited based on the schema.
+     *
+     * @param Parameter $model
+     * @param CommandInterface $command
+     * @param Response $response
+     * @param $result
+     * @param $foundVisitors
+     */
+    private function visitAdditionalProperties(
+        Parameter $model,
+        CommandInterface $command,
+        Response $response,
+        &$result,
+        &$foundVisitors
+    ) {
+        if (!($location = $model->getAdditionalProperties()->getLocation())) {
+            return;
+        }
+
+        if (!isset($foundVisitors[$location])) {
+            $foundVisitors[$location] = $this->factory->getResponseVisitor($location);
+            $foundVisitors[$location]->before($command, $result);
+        }
+
+        // Remove the main model name from schema definition so it doesn't try to match any particular property...
+        $oldWireName = $model->getWireName();
+        $oldName = $model->getName();
+        $model->setSentAs(null)->setName(null);
+        // Run the visitor against main schema and allow it visit all undefined properties
+        $foundVisitors[$location]->visit($command, $response, $model, $result, true);
+        // Restore names
+        $model->setSentAs($oldWireName)->setName($oldName);
+    }
+
+    private function visitOuterArray(
+        Parameter $model,
+        CommandInterface $command,
+        Response $response,
+        &$result,
+        &$foundVisitors
+    ) {
+        // Use 'location' defined on the top of the model
+        if ($location = $model->getLocation()) {
+            if (!isset($foundVisitors[$location])) {
+                $foundVisitors[$location] = $this->factory->getResponseVisitor($location);
+                $foundVisitors[$location]->before($command, $result);
+            }
+        }
+
+        // Use 'location' from items schema
+        $items = $model->getItems();
+        if ($items instanceof Parameter && ($location = $items->getLocation())) {
+            // Trigger the before method on the first found visitor of this type
+            if (!isset($foundVisitors[$location])) {
+                $foundVisitors[$location] = $this->factory->getResponseVisitor($location);
+                $foundVisitors[$location]->before($command, $result);
+            }
+        }
+
+        if ($items = $model->getItems()) {
+            // Visit if items or the model have a location
+            if ($location = $items->getLocation() ?: $model->getLocation()) {
+                // Visit items of a top-level array
+                $foundVisitors[$location]->visit($command, $response, $model, $result, true);
+            }
+        }
     }
 }

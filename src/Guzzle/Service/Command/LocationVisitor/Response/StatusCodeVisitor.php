@@ -16,7 +16,7 @@ class StatusCodeVisitor extends AbstractResponseVisitor
         Response $response,
         Parameter $param,
         &$value,
-        $context =  null
+        $context = null
     ) {
         $value[$param->getName()] = $response->getStatusCode();
     }

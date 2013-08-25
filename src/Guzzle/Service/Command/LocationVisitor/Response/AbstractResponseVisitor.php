@@ -21,6 +21,6 @@ abstract class AbstractResponseVisitor implements ResponseVisitorInterface
         Response $response,
         Parameter $param,
         &$value,
-        $context =  null
+        $context = null
     ) {}
 }

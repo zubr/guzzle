@@ -12,17 +12,17 @@ use SimpleXMLElement;
  */
 class XmlVisitor extends AbstractResponseVisitor
 {
-    /**
-     * XML document being visited.
-     *
-     * @var SimpleXMLElement
-     */
+    /** @var SimpleXMLElement XML document being visited */
     protected $xml;
 
     public function before(CommandInterface $command, array &$result)
     {
-        // Retrieve XML structure for processing
         $this->xml = $command->getResponse()->xml();
+    }
+
+    public function after(CommandInterface $command)
+    {
+        $this->xml = null;
     }
 
     public function visit(
@@ -31,8 +31,7 @@ class XmlVisitor extends AbstractResponseVisitor
         Parameter $param,
         &$value,
         $context = null
-    )
-    {
+    ) {
         $name = $param->getName();
         $sentAs = $param->getWireName();
         $ns = null;
@@ -74,7 +73,7 @@ class XmlVisitor extends AbstractResponseVisitor
      * @param \SimpleXMLElement $node  Node being processed
      * @return array
      */
-    protected function recursiveProcess(Parameter $param, SimpleXMLElement $node)
+    protected function recursiveProcess(Parameter $param, \SimpleXMLElement $node)
     {
         $result = array();
         $type = $param->getType();
@@ -130,7 +129,7 @@ class XmlVisitor extends AbstractResponseVisitor
      * @param SimpleXMLElement $node  Value to process
      * @return array
      */
-    protected function processObject(Parameter $param, SimpleXMLElement $node)
+    protected function processObject(Parameter $param, \SimpleXMLElement $node)
     {
         $result = $knownProps = array();
 
@@ -140,8 +139,7 @@ class XmlVisitor extends AbstractResponseVisitor
                 $name = $property->getName();
                 $sentAs = $property->getWireName();
                 $knownProps[$sentAs] = 1;
-                $ns = null;
-                if (strstr($sentAs, ':')) {
+                if (strpos($sentAs, ':')) {
                     list($ns, $sentAs) = explode(':', $sentAs);
                 } else {
                     $ns = $property->getData('xmlNs');
@@ -150,7 +148,6 @@ class XmlVisitor extends AbstractResponseVisitor
                 if ($property->getData('xmlAttribute')) {
                     // Handle XML attributes
                     $result[$name] = (string)$node->attributes($ns, true)->{$sentAs};
-
                 } elseif (count($node->children($ns, true)->{$sentAs})) {
                     // Found a child node matching wire name
                     $childNode = $node->children($ns, true)->{$sentAs};
@@ -163,8 +160,7 @@ class XmlVisitor extends AbstractResponseVisitor
         $additional = $param->getAdditionalProperties();
         if ($additional instanceof Parameter) {
             // Process all child elements according to the given schema
-            $children = $node->children($additional->getData('xmlNs'), true);
-            foreach ($children as $childNode) {
+            foreach ($node->children($additional->getData('xmlNs'), true) as $childNode) {
                 $sentAs = $childNode->getName();
                 if (!isset($knownProps[$sentAs])) {
                     $result[$sentAs] = $this->recursiveProcess($additional, $childNode);
@@ -172,11 +168,8 @@ class XmlVisitor extends AbstractResponseVisitor
             }
         } elseif ($additional === null || $additional === true) {
             // Blindly transform the XML into an array preserving as much data as possible
-            $array = static::xmlToArray($node);
-
             // Remove processed, aliased properties
-            $array = array_diff_key($array, $knownProps);
-
+            $array = array_diff_key(static::xmlToArray($node), $knownProps);
             // Merge it together with the original result
             $result = array_merge($array, $result);
         }
@@ -184,56 +177,48 @@ class XmlVisitor extends AbstractResponseVisitor
         return $result;
     }
 
-    public function after(CommandInterface $command)
-    {
-        // Free up memory
-        $this->xml = null;
-    }
-
     /**
-     * @param SimpleXMLElement $xml
-     * @param int              $nesting
-     * @param null             $ns
+     * @param \SimpleXMLElement $xml
+     * @param int               $nesting
+     * @param null              $ns
+     *
      * @return array
      */
-    public static function xmlToArray(SimpleXMLElement $xml, $ns = null, $nesting = 0)
+    protected static function xmlToArray(\SimpleXMLElement $xml, $ns = null, $nesting = 0)
     {
         $result = array();
-        $attributes = (array)$xml->attributes($ns, true);
         $children = $xml->children($ns, true);
 
         foreach ($children as $name => $child) {
-            if (isset($result[$name])) {
-                // A child element with this name exists so we're assuming that the
-                // node contains a list of elements
+            if (!isset($result[$name])) {
+                $result[$name] = static::xmlToArray($child, $ns, $nesting + 1);
+            } else {
+                // A child element with this name exists so we're assuming that the node contains a list of elements
                 if (!is_array($result[$name])) {
                     $result[$name] = array($result[$name]);
                 }
                 $result[$name][] = static::xmlToArray($child, $ns, $nesting + 1);
-            } else {
-                //
-                $result[$name] = static::xmlToArray($child, $ns, $nesting + 1);
             }
         }
 
         // Extract text from node
-        $text = trim((string)$xml);
+        $text = trim((string) $xml);
         if (empty($text)) {
             $text = null;
         }
 
         // Process attributes
-        if (!empty($attributes)) {
-            if (!is_null($text)) {
+        if ($attributes = (array) $xml->attributes($ns, true)) {
+            if ($text !== null) {
                 $result['value'] = $text;
                 $result = array_merge($attributes, $result);
             }
-        } else if (!is_null($text)) {
+        } else if ($text !== null) {
             $result = $text;
         }
 
         // Make sure we're always returning an array
-        if (!is_array($result) && $nesting == 0) {
+        if ($nesting == 0 && !is_array($result)) {
             $result = array($result);
         }
 

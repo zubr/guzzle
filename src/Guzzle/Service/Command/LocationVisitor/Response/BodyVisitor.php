@@ -16,7 +16,7 @@ class BodyVisitor extends AbstractResponseVisitor
         Response $response,
         Parameter $param,
         &$value,
-        $context =  null
+        $context = null
     ) {
         $value[$param->getName()] = $param->filter($response->getBody());
     }

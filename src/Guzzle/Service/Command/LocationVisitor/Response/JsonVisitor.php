@@ -16,17 +16,18 @@ use Guzzle\Service\Command\CommandInterface;
  */
 class JsonVisitor extends AbstractResponseVisitor
 {
-    /**
-     * The JSON document being visited
-     *
-     * @var array
-     */
+    /** @var array The JSON document being visited */
     protected $json = array();
 
     public function before(CommandInterface $command, array &$result)
     {
-        // Parse JSON from command response
         $this->json = $command->getResponse()->json();
+    }
+
+    public function after(CommandInterface $command)
+    {
+        // Free up memory
+        $this->json = array();
     }
 
     public function visit(
@@ -35,17 +36,14 @@ class JsonVisitor extends AbstractResponseVisitor
         Parameter $param,
         &$value,
         $context = null
-    )
-    {
-        $name   = $param->getName();
-        $sentAs = $param->getSentAs();
-        $key    = $param->getWireName();
+    ) {
+        $name = $param->getName();
+        $key = $param->getWireName();
 
-        $treatAsList = $param->getType() == 'array' && (empty($key) || ($sentAs === '') || $context);
-
-        if($treatAsList) {
+        // Check if the result should be treated as a list
+        if ($param->getType() == 'array' && ($context || !$key || $param->getSentAs() === '')) {
             // Treat as javascript array
-            if ($context || empty($name)) {
+            if ($context || !$name) {
                 // top-level `array` or an empty name
                 $value = array_merge($value, $this->recursiveProcess($param, $this->json));
             } else {
@@ -54,8 +52,8 @@ class JsonVisitor extends AbstractResponseVisitor
             }
         } elseif (isset($this->json[$key])) {
             // Treat as a javascript object
-            if (empty($name)) {
-                $value = array_merge($value, $this->recursiveProcess($param, $this->json[$key]));
+            if (!$name) {
+                $value += $this->recursiveProcess($param, $this->json[$key]);
             } else {
                 $value[$name] = $this->recursiveProcess($param, $this->json[$key]);
             }
@@ -63,21 +61,17 @@ class JsonVisitor extends AbstractResponseVisitor
 
         // Handle additional, undefined properties
         $additional = $param->getAdditionalProperties();
-        if ($additional instanceof Parameter) {
-            // Process all child elements according to the given schema
-            foreach ($this->json as $prop => $val) {
-                if (is_int($prop)) {
-                    $value[] = $this->recursiveProcess($additional, $val);
-                } elseif ($prop != $key) {
-                    $value[$prop] = $this->recursiveProcess($additional, $val);
-                }
-            }
-        } elseif ($additional === null || $additional === true) {
-            // Blindly merge the JSON into resulting array
-            // skipping the already processed property
+
+        if ($additional === null || $additional === true) {
+            // Blindly merge the JSON into resulting array skipping the already processed property
             $json = $this->json;
             unset($json[$key]);
-            $value = array_merge($json, $value);
+            $value += $json;
+        } elseif ($additional instanceof Parameter) {
+            // Process all child elements according to the given schema
+            foreach ($this->json as $prop => $val) {
+                $value[$prop] = $this->recursiveProcess($additional, $val);
+            }
         }
     }
 
@@ -92,60 +86,45 @@ class JsonVisitor extends AbstractResponseVisitor
     {
         if ($value === null) {
             return null;
+        } elseif (!is_array($value)) {
+            // Scalar values don't need to be walked
+            return $param->filter($value);
         }
 
-        if (is_array($value)) {
-            $result = array();
-            $type = $param->getType();
-            if ($type == 'array') {
-                $items = $param->getItems();
-                foreach ($value as $val) {
-                    $result[] = $this->recursiveProcess($items, $val);
-                }
-            } elseif ($type == 'object' && !isset($value[0])) {
-                // On the above line, we ensure that the array is associative and not numerically indexed
-                $knownProperties = array();
-                if ($properties = $param->getProperties()) {
-                    foreach ($properties as $property) {
-                        $name = $property->getName();
-                        $key = $property->getWireName();
-                        $knownProperties[$name] = 1;
-                        if (isset($value[$key])) {
-                            $result[$name] = $this->recursiveProcess($property, $value[$key]);
-                        }
+        $result = array();
+        $type = $param->getType();
+        if ($type == 'array') {
+            $items = $param->getItems();
+            foreach ($value as $val) {
+                $result[] = $this->recursiveProcess($items, $val);
+            }
+        } elseif ($type == 'object' && !isset($value[0])) {
+            // On the above line, we ensure that the array is associative and not numerically indexed
+            if ($properties = $param->getProperties()) {
+                foreach ($properties as $property) {
+                    $key = $property->getWireName();
+                    if (isset($value[$key])) {
+                        $result[$property->getName()] = $this->recursiveProcess($property, $value[$key]);
+                        // Remove from the value so that AP can later be handled
+                        unset($value[$key]);
                     }
-                }
-
-                $additional = $param->getAdditionalProperties();
-                if ($additional instanceof Parameter) {
-                    // Process all child elements according to the given schema
-                    foreach ($value as $prop => $val) {
-                        if (is_int($prop)) {
-                            $result[] = $this->recursiveProcess($additional, $val);
-                        } elseif ($prop != $key) {
-                            $result[$prop] = $this->recursiveProcess($additional, $val);
-                        }
-                    }
-                } elseif ($additional === null || $additional === true) {
-                    // Blindly merge the JSON into resulting array
-                    // skipping the already processed property
-                    $value = array_diff_key($value, $knownProperties);
-                    $result = array_merge($value, $result);
                 }
             }
-        } else {
-            // A scalar
-            $result = $value;
+            // Only check additional properties if everything wasn't already handled
+            if ($value) {
+                $additional = $param->getAdditionalProperties();
+                if ($additional === null || $additional === true) {
+                    // Blindly merge the JSON into resulting array skipping the already processed property
+                    $result += $value;
+                } elseif ($additional instanceof Parameter) {
+                    // Process all child elements according to the given schema
+                    foreach ($value as $prop => $val) {
+                        $result[$prop] = $this->recursiveProcess($additional, $val);
+                    }
+                }
+            }
         }
 
-        $result = $param->filter($result);
-
-        return $result;
-    }
-
-    public function after(CommandInterface $command)
-    {
-        // Free up memory
-        $this->json = array();
+        return $param->filter($result);
     }
 }
